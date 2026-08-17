@@ -181,6 +181,7 @@ async def _do_create(  # noqa: PLR0912
     method: str | None,
     cve: str | None,
     cwe: str | None,
+    owasp_category: str | None = None,
     code_locations: list[dict[str, Any]] | None,
     fix_pr_body: str | None = None,
     agent_id: str | None = None,
@@ -304,6 +305,7 @@ async def _do_create(  # noqa: PLR0912
             method=method,
             cve=cve,
             cwe=cwe,
+            owasp_category=owasp_category,
             code_locations=parsed_locations,
             fix_pr_body=fix_pr_body,
             agent_id=agent_id if isinstance(agent_id, str) else None,
@@ -357,12 +359,13 @@ async def create_vulnerability_report(
     remediation_steps: str,
     evidence: str,
     assumptions: str,
-    fix_effort: str,
+fix_effort: str,
     cvss_breakdown: dict[str, str],
-    endpoint: str | None = None,
-    method: str | None = None,
-    cve: str | None = None,
-    cwe: str | None = None,
+    endpoint: str | None,
+    method: str | None,
+    cve: str | None,
+    cwe: str | None,
+    owasp_category: str | None = None,
     code_locations: list[dict[str, Any]] | None = None,
     fix_pr_body: str | None = None,
 ) -> str:
@@ -569,6 +572,11 @@ async def create_vulnerability_report(
         method: HTTP method when relevant.
         cve: ``CVE-YYYY-NNNNN`` if certain, else omit.
         cwe: ``CWE-NNN`` (most specific child) if certain, else omit.
+        owasp_category: Optional OWASP Top 10 category id when known, e.g.
+            ``A03:2021 Injection``, ``A01``, ``API1:2023 Broken Object Level
+            Authorization``. Used to cross-map the finding to UAE compliance
+            frameworks (NESA IAS, DESC ISR, ADDA, CSC, PDPL) in reports.
+            Omit when unsure.
         code_locations: White-box findings — list of location objects.
 
             **How ``fix_before`` / ``fix_after`` work**: they're used as
@@ -693,6 +701,7 @@ async def create_vulnerability_report(
         method=method,
         cve=cve,
         cwe=cwe,
+        owasp_category=owasp_category,
         code_locations=code_locations,
         fix_pr_body=fix_pr_body,
         agent_id=agent_id,

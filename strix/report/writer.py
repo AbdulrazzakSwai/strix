@@ -16,6 +16,7 @@ from pygments.lexers import PythonLexer, get_lexer_by_name, guess_lexer
 from pygments.lexers.special import TextLexer
 from pygments.util import ClassNotFound
 
+from strix.compliance import FRAMEWORK_KEYS, framework_registry
 from strix.core.paths import run_record_path
 
 
@@ -28,6 +29,16 @@ _SEVERITY_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
 
 _FENCE_RE = re.compile(r"^```([^\n`]*)\r?\n(.*?)\r?\n?```$", re.DOTALL)
 _BACKTICK_RUN = re.compile(r"`+")
+
+
+def _severity_sort_key(report: dict[str, Any]) -> tuple[int, str]:
+    """Order findings highest severity first; stable within a severity.
+
+    Unknown severity labels sort below the known levels (still stable via
+    timestamp) so a bad label never surfaces above a real critical.
+    """
+    severity = str(report.get("severity") or "").lower().strip()
+    return (_SEVERITY_ORDER.get(severity, len(_SEVERITY_ORDER)), report.get("timestamp") or "")
 
 
 def safe_fence(content: str) -> str:
@@ -139,10 +150,7 @@ def write_vulnerabilities(
         )
         saved_vuln_ids.add(report["id"])
 
-    sorted_reports = sorted(
-        vulnerability_reports,
-        key=lambda r: (_SEVERITY_ORDER.get(r["severity"], 5), r["timestamp"]),
-    )
+    sorted_reports = sorted(vulnerability_reports, key=_severity_sort_key)
     csv_path = run_dir / "vulnerabilities.csv"
     csv_buf = io.StringIO()
     fieldnames = ["id", "title", "severity", "timestamp", "file"]
@@ -160,9 +168,12 @@ def write_vulnerabilities(
         )
     _atomic_write_text(csv_path, csv_buf.getvalue())
 
+    # Findings index is severity-ordered (highest first) so every consumer —
+    # the SPA dashboard, the PDF report, and JSON tooling — presents findings
+    # in the same order.
     _atomic_write_text(
         run_dir / "vulnerabilities.json",
-        json.dumps(vulnerability_reports, ensure_ascii=False, indent=2, default=str),
+        json.dumps(sorted_reports, ensure_ascii=False, indent=2, default=str),
     )
 
     if new_reports:
@@ -294,4 +305,36 @@ def render_vulnerability_md(report: dict[str, Any]) -> str:  # noqa: PLR0912, PL
         lines.append(str(report["assumptions"]))
         lines.append("")
 
+    lines.extend(render_compliance_breakdown(report))
+
     return "\n".join(lines)
+
+
+def render_compliance_breakdown(report: dict[str, Any]) -> list[str]:
+    """Markdown lines for a finding's "UAE Regulatory & Compliance Breakdown".
+
+    Empty when the finding carries no ``compliance_mappings`` (i.e. the
+    run did not enable compliance mapping or nothing matched).
+    """
+    mappings = report.get("compliance_mappings")
+    if not isinstance(mappings, dict) or not mappings:
+        return []
+    registry = framework_registry()
+    lines: list[str] = ["## UAE Regulatory & Compliance Breakdown", ""]
+    for key in FRAMEWORK_KEYS:
+        controls = mappings.get(key)
+        if not controls:
+            continue
+        framework = registry[key]
+        lines.append(f"### {framework.name}")
+        lines.append("")
+        for control in controls:
+            if not isinstance(control, dict):
+                continue
+            control_id = str(control.get("control_id") or "")
+            control_name = str(control.get("control_name") or "")
+            description = str(control.get("description") or "")
+            ref = f"{control_id} — {control_name}" if control_name else control_id
+            lines.append(f"- **{ref}**: {description}")
+        lines.append("")
+    return lines

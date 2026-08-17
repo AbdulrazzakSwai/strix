@@ -88,6 +88,17 @@ export interface CVSSBreakdown {
   availability: string | null;
 }
 
+// UAE regulatory & compliance framework mappings (ADDA/ADSS, NESA IAS,
+// DESC ISR, UAE CSC, UAE PDPL) attached by the strix CLI when the scan
+// runs with compliance mapping enabled (--frameworks / STRIX_COMPLIANCE).
+export interface ComplianceControl {
+  control_id: string;
+  control_name: string;
+  description: string;
+}
+
+export type ComplianceMappings = Record<string, ComplianceControl[]>;
+
 export interface Vulnerability {
   id: string;
   scan_id: string | null;
@@ -141,6 +152,7 @@ export interface Vulnerability {
   fix_pr_eligible?: boolean;
   fix_pr_reason?: string | null;
   fix_pr_url?: string | null;
+  compliance_mappings?: ComplianceMappings | null;
 }
 
 export interface VulnerabilityFilters {

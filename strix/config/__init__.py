@@ -17,6 +17,7 @@ from strix.config.loader import (
     persist_current,
 )
 from strix.config.settings import (
+    ComplianceSettings,
     ContextSettings,
     DedupeSettings,
     IntegrationSettings,
@@ -24,10 +25,12 @@ from strix.config.settings import (
     RuntimeSettings,
     Settings,
     TelemetrySettings,
+    ViewerSettings,
 )
 
 
 __all__ = [
+    "ComplianceSettings",
     "ContextSettings",
     "DedupeSettings",
     "IntegrationSettings",
@@ -35,6 +38,7 @@ __all__ = [
     "RuntimeSettings",
     "Settings",
     "TelemetrySettings",
+    "ViewerSettings",
     "apply_config_override",
     "load_settings",
     "persist_current",

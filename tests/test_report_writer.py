@@ -154,13 +154,33 @@ def test_write_vulnerabilities_creates_markdown_csv_and_json(tmp_path: Path) -> 
     assert new_count == 2
     assert (tmp_path / "vulnerabilities" / "vuln-0001.md").exists()
     assert (tmp_path / "vulnerabilities" / "vuln-0002.md").exists()
-    assert json.loads((tmp_path / "vulnerabilities.json").read_text(encoding="utf-8")) == reports
+    # The findings index is severity-ordered (highest first), matching the CSV.
+    json_index = json.loads((tmp_path / "vulnerabilities.json").read_text(encoding="utf-8"))
+    assert [r["id"] for r in json_index] == ["vuln-0002", "vuln-0001"]
 
     csv_rows = list(
         csv.DictReader((tmp_path / "vulnerabilities.csv").read_text(encoding="utf-8").splitlines()),
     )
     assert [row["id"] for row in csv_rows] == ["vuln-0002", "vuln-0001"]
     assert csv_rows[0]["severity"] == "CRITICAL"
+
+
+def test_write_vulnerabilities_orders_highest_severity_first(tmp_path: Path) -> None:
+    reports = [
+        _sample_report(id="vuln-0001", severity="low", timestamp="2026-07-02 10:00:00 UTC"),
+        _sample_report(id="vuln-0002", severity="medium", timestamp="2026-07-02 11:00:00 UTC"),
+        _sample_report(id="vuln-0003", severity="critical", timestamp="2026-07-02 12:00:00 UTC"),
+        _sample_report(id="vuln-0004", severity="high", timestamp="2026-07-02 09:00:00 UTC"),
+    ]
+    write_vulnerabilities(tmp_path, reports, set())
+
+    json_index = json.loads((tmp_path / "vulnerabilities.json").read_text(encoding="utf-8"))
+    assert [r["id"] for r in json_index] == ["vuln-0003", "vuln-0004", "vuln-0002", "vuln-0001"]
+
+    csv_rows = list(
+        csv.DictReader((tmp_path / "vulnerabilities.csv").read_text(encoding="utf-8").splitlines()),
+    )
+    assert [row["id"] for row in csv_rows] == ["vuln-0003", "vuln-0004", "vuln-0002", "vuln-0001"]
 
 
 def test_write_vulnerabilities_skips_already_saved_ids(tmp_path: Path) -> None:

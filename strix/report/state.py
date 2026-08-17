@@ -11,6 +11,10 @@ from uuid import uuid4
 
 from agents.usage import Usage
 
+from strix.compliance import (
+    map_vulnerability_to_uae_frameworks,
+    mappings_to_dict,
+)
 from strix.config import codex
 from strix.config.loader import load_settings
 from strix.core.paths import run_dir_for
@@ -234,6 +238,8 @@ class ReportState:
         method: str | None = None,
         cve: str | None = None,
         cwe: str | None = None,
+        owasp_category: str | None = None,
+        compliance_mappings: dict[str, Any] | None = None,
         code_locations: list[dict[str, Any]] | None = None,
         fix_pr_body: str | None = None,
         finding_class: str | None = None,
@@ -282,6 +288,18 @@ class ReportState:
             report["cve"] = cve.strip()
         if cwe:
             report["cwe"] = cwe.strip()
+        if compliance_mappings is None and cwe:
+            compliance = self._compliance_config()
+            if compliance.get("enabled") and compliance.get("frameworks"):
+                mapped = map_vulnerability_to_uae_frameworks(
+                    cwe,
+                    owasp_category,
+                    frameworks=compliance["frameworks"],
+                )
+                if mapped:
+                    report["compliance_mappings"] = mappings_to_dict(mapped)
+        elif compliance_mappings:
+            report["compliance_mappings"] = compliance_mappings
         if code_locations:
             report["code_locations"] = code_locations
         if fix_pr_body:
@@ -361,6 +379,11 @@ class ReportState:
 
     def set_scan_config(self, config: dict[str, Any]) -> None:
         self.scan_config = config
+        compliance = config.get("compliance") or {}
+        self.run_record["compliance"] = {
+            "enabled": bool(compliance.get("enabled")),
+            "frameworks": [str(key) for key in (compliance.get("frameworks") or [])],
+        }
         self.run_record["status"] = "running"
         self.run_record["end_time"] = None
         self.run_record.pop("scan_results", None)
@@ -395,6 +418,7 @@ class ReportState:
             self.run_record["status"] = status
 
         self._sync_llm_usage_record()
+        self._sync_compliance_record()
         self._save_artifacts()
 
     def cleanup(self, status: str = "stopped") -> None:
@@ -500,8 +524,22 @@ class ReportState:
                 context["ref"] = f"refs/heads/{branch}"
         return context
 
+    def _compliance_config(self) -> dict[str, Any]:
+        """Resolved ``compliance`` block from ``scan_config``, or ``{}``."""
+        config = self.scan_config or {}
+        compliance = config.get("compliance")
+        return compliance if isinstance(compliance, dict) else {}
+
     def _sync_llm_usage_record(self) -> None:
         self.run_record["llm_usage"] = self._build_llm_usage_record()
+
+    def _sync_compliance_record(self) -> None:
+        """Keep the run.json compliance summary in step with the findings."""
+        record = self.run_record.setdefault("compliance", {})
+        record["findings"] = len(self.vulnerability_reports)
+        record["findings_with_mappings"] = sum(
+            1 for report in self.vulnerability_reports if report.get("compliance_mappings")
+        )
 
     def _build_llm_usage_record(self) -> dict[str, Any]:
         return self._llm_usage.to_record()

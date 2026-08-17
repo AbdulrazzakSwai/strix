@@ -551,6 +551,13 @@ def _result_properties(
             poc["script_available"] = True
         strix["poc"] = poc
 
+    compliance_mappings = report.get("compliance_mappings")
+    if isinstance(compliance_mappings, dict) and compliance_mappings:
+        # UAE framework control references attached when the run enabled
+        # compliance mapping (--frameworks / STRIX_COMPLIANCE_FRAMEWORKS),
+        # so ASPM pipelines can group findings by regulatory framework.
+        strix["compliance"] = compliance_mappings
+
     if strix:
         properties["strix"] = strix
 

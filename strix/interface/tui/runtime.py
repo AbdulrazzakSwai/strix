@@ -35,7 +35,7 @@ from strix.interface.tui.sidecar import (
     tui_source_dir,
     wait_process,
 )
-from strix.interface.utils import read_workspace_files
+from strix.interface.utils import read_workspace_files, resolve_compliance_config
 from strix.report.state import ReportState, set_global_report_state
 from strix.utils.resource_paths import get_strix_resource_path
 
@@ -88,6 +88,7 @@ class GoTuiRuntime:
             "resume_instruction": self.args.user_explicit_instruction or "",
             "workspace_mount": getattr(self.args, "workspace_mount", None) or "",
             "workspace_subdir": getattr(self.args, "workspace_subdir", None) or "",
+            "compliance": resolve_compliance_config(getattr(self.args, "frameworks", None)),
         }
         self.report_state = ReportState(self.scan_config["run_name"])
         self.report_state.hydrate_from_run_dir()

@@ -180,7 +180,24 @@ function emptyVulnerabilityDefaults(): Omit<
     severity_changed_by: null,
     severity_override_reason: null,
     retest_of_vulnerability_id: null,
+    compliance_mappings: null,
   };
+}
+
+function parseComplianceMappings(raw: unknown): Vulnerability["compliance_mappings"] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const out: NonNullable<Vulnerability["compliance_mappings"]> = {};
+  for (const [framework, controls] of Object.entries(raw as Record<string, unknown>)) {
+    if (!Array.isArray(controls)) continue;
+    const parsed = controls.filter(
+      (c): c is { control_id: string; control_name: string; description: string } =>
+        !!c &&
+        typeof c === "object" &&
+        typeof (c as { control_id?: unknown }).control_id === "string"
+    );
+    if (parsed.length > 0) out[framework] = parsed;
+  }
+  return Object.keys(out).length > 0 ? out : null;
 }
 
 function parseOneVulnerability(
@@ -224,6 +241,7 @@ function parseOneVulnerability(
     fix_pr_body: asStringOrNull(raw.fix_pr_body),
     evidence: asStringOrNull(raw.evidence),
     assumptions: asStringOrNull(raw.assumptions),
+    compliance_mappings: parseComplianceMappings(raw.compliance_mappings),
     fix_effort: (asStringOrNull(raw.fix_effort) as Vulnerability["fix_effort"]) ?? null,
     cvss_breakdown: (raw.cvss_breakdown as Vulnerability["cvss_breakdown"]) ?? null,
   };

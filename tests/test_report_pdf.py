@@ -67,6 +67,125 @@ def test_generate_report_pdf_has_pdf_header(tmp_path: Path) -> None:
     assert len(pdf) > 1000
 
 
+def test_generate_report_pdf_orders_findings_highest_severity_first(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path)
+    # Deliberately rewrite the index in discovery order (low severity first)
+    # to prove the PDF sorts on its own.
+    vulns = json.loads((run_dir / "vulnerabilities.json").read_text(encoding="utf-8"))
+    vulns.reverse()
+    (run_dir / "vulnerabilities.json").write_text(json.dumps(vulns), encoding="utf-8")
+
+    pdf = generate_report_pdf(run_dir)
+    reader = PdfReader(BytesIO(pdf))
+    text = "\n".join(page.extract_text() or "" for page in reader.pages)
+    findings = text[text.index("Findings") :]
+    assert findings.index("SQL Injection") < findings.index("Informational note")
+
+
+def _link_dest_pages(reader: PdfReader) -> dict[int, list[int]]:
+    """Map each page index to the page indices its Link annotations point at.
+
+    reportlab resolves named destinations at save time, so each link
+    annotation carries a ``/Dest [page_ref /Fit]`` array rather than a name.
+    """
+    targets: dict[int, list[int]] = {}
+    for index, page in enumerate(reader.pages):
+        annots = page.get("/Annots")
+        if not annots:
+            continue
+        for annot in annots:
+            dest = annot.get_object().get("/Dest")
+            if not isinstance(dest, list) or not dest:
+                continue
+            for dest_index, dest_page in enumerate(reader.pages):
+                if dest_page.indirect_reference == dest[0]:
+                    targets.setdefault(index, []).append(dest_index)
+                    break
+    return targets
+
+
+def test_generate_report_pdf_has_clickable_table_of_contents(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path)
+    pdf = generate_report_pdf(run_dir)
+    reader = PdfReader(BytesIO(pdf))
+
+    pages = [page.extract_text() or "" for page in reader.pages]
+    toc_index = next(i for i, page in enumerate(pages) if "Table of Contents" in page)
+    toc_text = pages[toc_index]
+    assert "SQL Injection" in toc_text
+    assert "Informational note" in toc_text
+    assert "CRITICAL" in toc_text
+
+    dests = _link_dest_pages(reader)
+    links = dests.get(toc_index, [])
+    assert len(links) >= 3
+    # Every TOC link must actually jump to a later section/finding page.
+    assert all(target > toc_index for target in links)
+    targets_text = [pages[target] for target in set(links)]
+    assert any("Executive Summary" in text for text in targets_text)
+    assert any("Findings" in text for text in targets_text)
+    assert any("SQL Injection" in text for text in targets_text)
+
+
+def _outline_titles(entries: object) -> list[str]:
+    titles: list[str] = []
+    for entry in entries if isinstance(entries, list) else []:
+        if isinstance(entry, dict):
+            title = entry.get("/Title")
+            if title:
+                titles.append(title)
+        elif isinstance(entry, list):
+            titles.extend(_outline_titles(entry))
+        elif hasattr(entry, "title") and getattr(entry, "title"):  # noqa: B009 - entry is object
+            titles.append(getattr(entry, "title"))  # noqa: B009
+    return titles
+
+
+def _outline_pages(reader: PdfReader) -> dict[str, int]:
+    """Map outline titles to the page index their bookmark points at."""
+    targets: dict[str, int] = {}
+    for entry in _outline_items(reader.outline):
+        page_ref = entry.get("/Page")
+        if not page_ref:
+            continue
+        for index, page in enumerate(reader.pages):
+            if page.indirect_reference == page_ref:
+                targets[entry["/Title"]] = index
+                break
+    return targets
+
+
+def _outline_items(entries: object) -> list[dict[str, object]]:
+    items: list[dict[str, object]] = []
+    for entry in entries if isinstance(entries, list) else []:
+        if isinstance(entry, dict):
+            items.append(entry)
+            kids = entry.get("/Kids")
+            if kids:
+                items.extend(_outline_items([kid.get_object() for kid in kids]))
+        elif isinstance(entry, list):
+            items.extend(_outline_items(entry))
+    return items
+
+
+def test_generate_report_pdf_outline_bookmarks_are_registered(tmp_path: Path) -> None:
+    run_dir = _make_run(tmp_path)
+    pdf = generate_report_pdf(run_dir)
+    reader = PdfReader(BytesIO(pdf))
+    titles = _outline_titles(reader.outline)
+    assert "Table of Contents" in titles
+    assert "Executive Summary" in titles
+    assert "Findings" in titles
+    assert any(title.startswith("1. ") for title in titles)
+
+    pages = [page.extract_text() or "" for page in reader.pages]
+    outline_pages = _outline_pages(reader)
+    toc_index = next(i for i, text in enumerate(pages) if "Table of Contents" in text)
+    assert outline_pages["Executive Summary"] > toc_index
+    assert "Executive Summary" in pages[outline_pages["Executive Summary"]]
+    assert "Findings" in pages[outline_pages["Findings"]]
+
+
 def test_generate_password_is_long_and_random() -> None:
     first = generate_password()
     second = generate_password()

@@ -91,7 +91,7 @@ class ContextSettings(BaseSettings):
     compact_buffer_tokens: int = Field(default=20_000, gt=0, alias="STRIX_CONTEXT_BUFFER_TOKENS")
     keep_tokens: int = Field(default=8_000, gt=0, alias="STRIX_CONTEXT_KEEP_TOKENS")
     fallback_context_tokens: int = Field(
-        default=200_000, gt=0, alias="STRIX_CONTEXT_FALLBACK_TOKENS"
+        default=32_000, gt=0, alias="STRIX_CONTEXT_FALLBACK_TOKENS"
     )
     summary_max_tokens: int = Field(default=4_096, gt=0, alias="STRIX_CONTEXT_SUMMARY_TOKENS")
     tool_output_max_tokens: int = Field(default=8_000, gt=0, alias="STRIX_TOOL_OUTPUT_MAX_TOKENS")
@@ -144,6 +144,30 @@ class ViewerSettings(BaseSettings):
     app_url: str = Field(default="https://app.strix.ai", alias="STRIX_APP_URL")
 
 
+class ComplianceSettings(BaseSettings):
+    """UAE compliance framework mapping toggle for reports.
+
+    Enables the "UAE Regulatory & Compliance Breakdown" section in
+    findings/reports. ``frameworks`` is a comma-separated list of
+    ``adda`` / ``nesa`` / ``desc`` / ``csc`` / ``pdpl`` (or ``all``).
+    The ``--frameworks`` CLI flag takes precedence over these settings.
+    """
+
+    model_config = _BASE_CONFIG
+
+    enabled: bool = Field(default=False, alias="STRIX_COMPLIANCE")
+    frameworks: str = Field(default="", alias="STRIX_COMPLIANCE_FRAMEWORKS")
+
+    def resolved_frameworks(self) -> tuple[str, ...]:
+        """Parsed ``frameworks`` value (comma-separated), cleaned and deduped."""
+        keys: list[str] = []
+        for entry in self.frameworks.split(","):
+            key = entry.strip().lower()
+            if key and key not in keys:
+                keys.append(key)
+        return tuple(keys)
+
+
 class Settings(BaseSettings):
     model_config = _BASE_CONFIG
 
@@ -154,3 +178,4 @@ class Settings(BaseSettings):
     telemetry: TelemetrySettings = Field(default_factory=TelemetrySettings)
     integrations: IntegrationSettings = Field(default_factory=IntegrationSettings)
     viewer: ViewerSettings = Field(default_factory=ViewerSettings)
+    compliance: ComplianceSettings = Field(default_factory=ComplianceSettings)

@@ -27,6 +27,36 @@ from strix.utils.api_spec import detect_spec_format
 logger = logging.getLogger(__name__)
 
 
+def resolve_compliance_config(
+    frameworks: list[str] | None,
+    compliance_settings: object | None = None,
+) -> dict[str, Any]:
+    """Resolve the ``compliance`` block stored in scan_config / run.json.
+
+    The ``--frameworks`` CLI flag wins when given; otherwise the
+    ``STRIX_COMPLIANCE`` / ``STRIX_COMPLIANCE_FRAMEWORKS`` settings apply.
+    Returns ``{"enabled": bool, "frameworks": [...]}`` with the framework
+    keys in canonical order (empty when compliance is off).
+    """
+    selected = frameworks or []
+    if selected:
+        from strix.compliance import resolve_framework_keys
+
+        return {"enabled": True, "frameworks": list(resolve_framework_keys(selected))}
+
+    if compliance_settings is None:
+        from strix.config import load_settings
+
+        compliance_settings = load_settings().compliance
+    configured = list(getattr(compliance_settings, "resolved_frameworks", lambda: ())())
+    enabled = bool(getattr(compliance_settings, "enabled", False))
+    if not enabled and not configured:
+        return {"enabled": False, "frameworks": []}
+    from strix.compliance import resolve_framework_keys
+
+    return {"enabled": True, "frameworks": list(resolve_framework_keys(configured or ("all",)))}
+
+
 def get_severity_color(severity: str) -> str:
     severity_colors = {
         "critical": "#dc2626",

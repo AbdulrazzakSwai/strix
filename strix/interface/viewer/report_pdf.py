@@ -38,6 +38,7 @@ from reportlab.platypus import (
     TableStyle,
 )
 
+from strix.compliance import FRAMEWORK_KEYS, framework_registry
 from strix.interface.viewer.transcript import (
     primary_target,
     read_run_summary,
@@ -79,30 +80,35 @@ def _esc(value: Any) -> str:
     return html.escape(str(value)).replace("\n", "<br/>")
 
 
-class _NumberedCanvas(pdfcanvas.Canvas):  # type: ignore[misc]  # reportlab base is untyped
-    """Two-pass canvas that prints 'Page X of Y' on every page after the cover."""
+class _FooterCanvas(pdfcanvas.Canvas):  # type: ignore[misc]  # reportlab base is untyped
+    """Single-pass canvas printing 'Page X of Y' after the cover.
 
-    def __init__(self, *args: Any, **kwargs: Any) -> None:
+    A normal (non-overriding) canvas keeps reportlab's page machinery intact,
+    so internal links and outline bookmarks bind to the real pages. The page
+    total comes from a separate sizing build (see \\_page_total).
+    """
+
+    def __init__(self, total: int, *args: Any, **kwargs: Any) -> None:
+        self._total = total
         super().__init__(*args, **kwargs)
-        self._saved_states: list[dict[str, Any]] = []
 
-    def showPage(self) -> None:  # noqa: N802 - reportlab API
-        self._saved_states.append(dict(self.__dict__))
-        self._startPage()
-
-    def save(self) -> None:
-        total = len(self._saved_states)
-        for index, state in enumerate(self._saved_states):
-            self.__dict__.update(state)
-            if index > 0:  # skip the cover page
-                self._draw_footer(index + 1, total)
-            super().showPage()
-        super().save()
-
-    def _draw_footer(self, page: int, total: int) -> None:
+    def _draw_footer(self) -> None:
+        if self._pageNumber <= 1:  # skip the cover page
+            return
         self.setFont(_SANS, 8)
         self.setFillColor(_FAINT)
-        self.drawCentredString(_PAGE_W / 2, 14 * mm, f"Page {page} of {total}")
+        self.drawCentredString(_PAGE_W / 2, 14 * mm, f"Page {self._pageNumber} of {self._total}")
+
+    def showPage(self) -> None:  # noqa: N802 - reportlab API
+        self._draw_footer()
+        super().showPage()
+
+    def save(self) -> None:
+        # Flush the final page through showPage() so the footer is drawn
+        # inside it, instead of letting the base save() start a new page.
+        if len(self._code):
+            self.showPage()
+        super().save()
 
 
 class _LogoMark(Flowable):  # type: ignore[misc]  # reportlab base is untyped
@@ -122,6 +128,28 @@ class _LogoMark(Flowable):  # type: ignore[misc]  # reportlab base is untyped
         c.setFillColor(colors.white)
         c.setFont(_SANS_BOLD, s * 0.56)
         c.drawCentredString(s / 2, s * 0.27, "S")
+
+
+class _Anchor(Flowable):  # type: ignore[misc]  # reportlab base is untyped
+    """Zero-size marker registering a clickable PDF destination.
+
+    Creates a named destination (jumped to from ``<a href="#key">`` links in
+    the table of contents) and an outline/bookmark entry for the PDF
+    reader's sidebar when ``title`` is given.
+    """
+
+    def __init__(self, key: str, title: str = "", level: int = 0) -> None:
+        super().__init__()
+        self.key = key
+        self.title = title
+        self.level = level
+        self.width = 0
+        self.height = 0
+
+    def draw(self) -> None:
+        self.canv.bookmarkPage(self.key)
+        if self.title:
+            self.canv.addOutlineEntry(self.title, self.key, self.level, 0)
 
 
 def _styles() -> dict[str, ParagraphStyle]:
@@ -219,6 +247,24 @@ def _styles() -> dict[str, ParagraphStyle]:
         leading=11,
         textColor=colors.white,
         alignment=TA_CENTER,
+    )
+    styles["toc_section"] = ParagraphStyle(
+        "TocSection",
+        fontName=_SANS_BOLD,
+        fontSize=10.5,
+        leading=16,
+        textColor=_INK,
+        spaceBefore=8,
+        spaceAfter=2,
+    )
+    styles["toc_entry"] = ParagraphStyle(
+        "TocEntry",
+        fontName=_SANS,
+        fontSize=10.5,
+        leading=16,
+        textColor=_TEXT,
+        leftIndent=14,
+        spaceAfter=2,
     )
     styles["confidential"] = ParagraphStyle(
         "Confidential",
@@ -405,6 +451,56 @@ def _cover(
     ]
 
 
+def _toc_flowables(
+    styles: dict[str, ParagraphStyle], record: dict[str, Any], vulns: list[dict[str, Any]]
+) -> list[Flowable]:
+    """Clickable table of contents linking to every section and finding.
+
+    Each entry is an internal link to a named destination registered by the
+    matching ``_Anchor``; the anchors also populate the PDF reader's outline
+    (sidebar bookmarks). Always followed by a page break so the executive
+    summary starts on a fresh page.
+    """
+    story: list[Flowable] = [
+        _Anchor("toc", "Table of Contents"),
+        _section(styles, "Table of Contents"),
+        Spacer(1, 12),
+    ]
+
+    section_entries: list[tuple[str, str]] = [("Executive Summary", "executive-summary")]
+    scan_results = record.get("scan_results")
+    if isinstance(scan_results, dict):
+        for label, key in (
+            ("Methodology", "methodology"),
+            ("Technical Analysis", "technical_analysis"),
+            ("Recommendations", "recommendations"),
+        ):
+            value = scan_results.get(key)
+            if isinstance(value, str) and value.strip():
+                section_entries.append((label, key))
+    section_entries.append(("Findings", "findings"))
+
+    for title, key in section_entries:
+        story.append(
+            Paragraph(f'<a href="#{key}" color="#2563eb">{_esc(title)}</a>', styles["toc_section"])
+        )
+
+    for index, vuln in enumerate(vulns, start=1):
+        severity = str(vuln.get("severity") or "").lower().strip() or "low"
+        color = _SEVERITY_COLORS.get(severity, _MUTED)
+        title = f"{index}. {vuln.get('title') or 'Untitled finding'}"
+        link = f'<a href="#finding-{index}" color="#2563eb">{_esc(title)}</a>'
+        story.append(
+            Paragraph(
+                f'{link} <font color="{color}">{severity.upper()}</font>',
+                styles["toc_entry"],
+            )
+        )
+
+    story.append(PageBreak())
+    return story
+
+
 def _inline_md(text: str) -> str:
     """Convert inline markdown (bold, italic, `code`) to reportlab markup.
 
@@ -565,14 +661,49 @@ def _finding_flowables(
         remediation = "\n".join(str(step) for step in remediation)
     story.extend(_field_block(styles, "Remediation", remediation))
 
+    compliance_section = _compliance_breakdown_text(vuln)
+    if compliance_section:
+        story.extend(
+            _field_block(styles, "UAE Regulatory & Compliance Breakdown", compliance_section)
+        )
+
     story.append(Spacer(1, 22))
     return story
+
+
+def _compliance_breakdown_text(vuln: dict[str, Any]) -> str:
+    """Prose/markdown text for a finding's compliance mappings, or empty.
+
+    Rendered through the report's markdown pipeline so bold control
+    references and framework headings survive the PDF build.
+    """
+    mappings = vuln.get("compliance_mappings")
+    if not isinstance(mappings, dict) or not mappings:
+        return ""
+    registry = framework_registry()
+    blocks: list[str] = []
+    for key in FRAMEWORK_KEYS:
+        controls = mappings.get(key)
+        if not controls:
+            continue
+        framework = registry[key]
+        blocks.append(f"**{framework.name}**")
+        for control in controls:
+            if not isinstance(control, dict):
+                continue
+            control_id = str(control.get("control_id") or "")
+            control_name = str(control.get("control_name") or "")
+            description = str(control.get("description") or "")
+            ref = f"{control_id} — {control_name}" if control_name else control_id
+            blocks.append(f"- **{ref}**: {description}")
+    return "\n".join(blocks)
 
 
 def _overview_flowables(
     styles: dict[str, ParagraphStyle], record: dict[str, Any], total: int, counts: dict[str, int]
 ) -> list[Flowable]:
     story: list[Flowable] = [
+        _Anchor("executive-summary", "Executive Summary"),
         _section(styles, "Executive Summary"),
         Spacer(1, 16),
         _severity_grid(styles, counts),
@@ -594,20 +725,70 @@ def _overview_flowables(
         value = scan_results.get(key)
         if isinstance(value, str) and value.strip():
             story.append(Spacer(1, 20))
+            story.append(_Anchor(key, label))
             story.append(_section(styles, label))
             story.append(Spacer(1, 12))
             story.extend(_markdown_flowables(_strip_leading_heading(value), styles))
     return story
 
 
+def _severity_sort_key(vuln: dict[str, Any]) -> tuple[int, str]:
+    """Order findings highest severity first; unknown labels sort last."""
+    severity = str(vuln.get("severity") or "").lower().strip()
+    try:
+        rank = _SEVERITY_ORDER.index(severity)
+    except ValueError:
+        rank = len(_SEVERITY_ORDER)
+    return (rank, str(vuln.get("timestamp") or ""))
+
+
+def _page_total(story: list[Flowable]) -> int:
+    """Build once with a plain canvas to learn the page count for the footer."""
+    probe = BytesIO()
+    probe_doc = SimpleDocTemplate(
+        probe,
+        pagesize=A4,
+        leftMargin=20 * mm,
+        rightMargin=20 * mm,
+        topMargin=22 * mm,
+        bottomMargin=24 * mm,
+    )
+    probe_doc.build(list(story))  # build() consumes the list; keep the original
+    return len(PdfReader(BytesIO(probe.getvalue())).pages)
+
+
 def generate_report_pdf(run_dir: Path) -> bytes:
     """Render a branded, full-detail PDF report for the run at ``run_dir``."""
     record = read_run_summary(run_dir)
     vulns = [v for v in read_vulnerabilities(run_dir) if isinstance(v, dict)]
+    vulns.sort(key=_severity_sort_key)
     counts = severity_counts(vulns)
     run_name = str(record.get("run_name") or run_dir.name)
 
     styles = _styles()
+    story: list[Flowable] = []
+    story.extend(_cover(styles, record, run_name))
+    story.extend(_toc_flowables(styles, record, vulns))
+    story.extend(_overview_flowables(styles, record, len(vulns), counts))
+
+    story.append(PageBreak())
+    story.append(_Anchor("findings", "Findings"))
+    story.append(_section(styles, "Findings"))
+    story.append(Spacer(1, 16))
+    if vulns:
+        for index, vuln in enumerate(vulns, start=1):
+            story.append(
+                _Anchor(
+                    f"finding-{index}",
+                    f"{index}. {vuln.get('title') or 'Untitled finding'}",
+                    1,
+                )
+            )
+            story.extend(_finding_flowables(styles, index, vuln))
+    else:
+        story.append(Paragraph("No findings were recorded for this run.", styles["body"]))
+
+    total = _page_total(story)
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -620,20 +801,10 @@ def generate_report_pdf(run_dir: Path) -> bytes:
         bottomMargin=24 * mm,
     )
 
-    story: list[Flowable] = []
-    story.extend(_cover(styles, record, run_name))
-    story.extend(_overview_flowables(styles, record, len(vulns), counts))
-
-    story.append(PageBreak())
-    story.append(_section(styles, "Findings"))
-    story.append(Spacer(1, 16))
-    if vulns:
-        for index, vuln in enumerate(vulns, start=1):
-            story.extend(_finding_flowables(styles, index, vuln))
-    else:
-        story.append(Paragraph("No findings were recorded for this run.", styles["body"]))
-
-    doc.build(story, canvasmaker=_NumberedCanvas)
+    doc.build(
+        story,
+        canvasmaker=lambda *args, **kwargs: _FooterCanvas(total, *args, **kwargs),
+    )
     return buffer.getvalue()
 
 

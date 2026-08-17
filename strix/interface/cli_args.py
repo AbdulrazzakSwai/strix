@@ -255,6 +255,24 @@ Examples:
         ),
     )
 
+    parser.add_argument(
+        "--frameworks",
+        dest="frameworks",
+        metavar="FRAMEWORK",
+        action="append",
+        choices=["adda", "nesa", "desc", "csc", "pdpl", "all"],
+        help=(
+            "Enable UAE Regulatory & Compliance Breakdown mapping in reports "
+            "and attach compliance controls to findings. FRAMEWORK is one of "
+            "'adda' (Abu Dhabi Information Security Standards / ADDA-ADISSC), "
+            "'nesa' (UAE Information Assurance Standards), "
+            "'desc' (Dubai ISR v3.1), 'csc' (UAE CSC Cloud & IoT Security), "
+            "'pdpl' (UAE PDPL, Federal Decree-Law 45/2021), or 'all'. "
+            "Repeatable; 'all' selects every supported framework. "
+            "Defaults to off (see STRIX_COMPLIANCE / STRIX_COMPLIANCE_FRAMEWORKS)."
+        ),
+    )
+
     args = parser.parse_args()
     # Startup-resolved state lives alongside the parsed flags. The full schema
     # is established here so downstream code reads attributes directly.
@@ -263,6 +281,11 @@ Examples:
     args.local_sources = []
     args.diff_scope = {"active": False}
     args.run_name = None
+
+    if args.frameworks:
+        from strix.compliance import resolve_framework_keys
+
+        args.frameworks = list(resolve_framework_keys(args.frameworks))
 
     if args.config:
         apply_config_override(validate_config_file(args.config))
@@ -350,6 +373,16 @@ def _load_resume_state(args: argparse.Namespace, parser: argparse.ArgumentParser
         parser.error(f"--resume {args.resume}: run.json unreadable: {exc}")
 
     args.targets_info = state.get("targets_info") or []
+    if not getattr(args, "frameworks", None):
+        compliance_block = state.get("compliance")
+        if isinstance(compliance_block, dict):
+            restored = compliance_block.get("frameworks")
+            if isinstance(restored, list) and restored:
+                args.frameworks = [str(framework) for framework in restored]
+    if args.frameworks:
+        from strix.compliance import resolve_framework_keys
+
+        args.frameworks = list(resolve_framework_keys(args.frameworks))
     # A target-less run has no targets_info at all. It is driven by its
     # instruction, over a mounted working directory or over nothing when the
     # mount was declined, so either of those is enough to resume it.
