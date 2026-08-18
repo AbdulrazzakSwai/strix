@@ -757,15 +757,19 @@ def _page_total(story: list[Flowable]) -> int:
     return len(PdfReader(BytesIO(probe.getvalue())).pages)
 
 
-def generate_report_pdf(run_dir: Path) -> bytes:
-    """Render a branded, full-detail PDF report for the run at ``run_dir``."""
-    record = read_run_summary(run_dir)
-    vulns = [v for v in read_vulnerabilities(run_dir) if isinstance(v, dict)]
-    vulns.sort(key=_severity_sort_key)
-    counts = severity_counts(vulns)
-    run_name = str(record.get("run_name") or run_dir.name)
+def _story_flowables(
+    styles: dict[str, ParagraphStyle],
+    record: dict[str, Any],
+    vulns: list[dict[str, Any]],
+    counts: dict[str, int],
+    run_name: str,
+) -> list[Flowable]:
+    """Assemble the full report story.
 
-    styles = _styles()
+    Fresh flowables per call: reportlab stamps ``_postponed`` on flowables it
+    moves across page breaks, and reusing the same objects across builds (the
+    sizing pass + the real pass) would trip the LayoutError guard.
+    """
     story: list[Flowable] = []
     story.extend(_cover(styles, record, run_name))
     story.extend(_toc_flowables(styles, record, vulns))
@@ -787,8 +791,21 @@ def generate_report_pdf(run_dir: Path) -> bytes:
             story.extend(_finding_flowables(styles, index, vuln))
     else:
         story.append(Paragraph("No findings were recorded for this run.", styles["body"]))
+    return story
 
-    total = _page_total(story)
+
+def generate_report_pdf(run_dir: Path) -> bytes:
+    """Render a branded, full-detail PDF report for the run at ``run_dir``."""
+    record = read_run_summary(run_dir)
+    vulns = [v for v in read_vulnerabilities(run_dir) if isinstance(v, dict)]
+    vulns.sort(key=_severity_sort_key)
+    counts = severity_counts(vulns)
+    run_name = str(record.get("run_name") or run_dir.name)
+
+    styles = _styles()
+    total = _page_total(
+        _story_flowables(styles, record, vulns, counts, run_name)
+    )
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -802,7 +819,7 @@ def generate_report_pdf(run_dir: Path) -> bytes:
     )
 
     doc.build(
-        story,
+        _story_flowables(styles, record, vulns, counts, run_name),
         canvasmaker=lambda *args, **kwargs: _FooterCanvas(total, *args, **kwargs),
     )
     return buffer.getvalue()
